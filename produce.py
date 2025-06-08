@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import logging
 from ipaddress import IPv4Network, IPv6Network
 import math
 
 parser = argparse.ArgumentParser(description='Generate non-China routes for BIRD.')
 parser.add_argument('--exclude', metavar='CIDR', type=str, nargs='*',
                     help='IPv4 ranges to exclude in CIDR format')
+parser.add_argument('--include', metavar='CIDR', type=str, nargs='*',
+                    help='IPv4/IPv6 ranges to force include even if they are in reserved ranges (useful for DNS fake IPs)')
+parser.add_argument('--force', action='store_true',
+                    help='Force add --include ranges even if they are covered by existing routes')
+parser.add_argument('--verbose', '-v', action='store_true',
+                    help='Enable verbose output')
 parser.add_argument('--next', default="wg0", metavar = "INTERFACE OR IP",
                     help='next hop for where non-China IP address, this is usually the tunnel interface')
 parser.add_argument('--ipv4-list', choices=['apnic', 'ipip'], default=['apnic', 'ipip'], nargs='*',
                     help='IPv4 lists to use when subtracting China based IP, multiple lists can be used at the same time (default: apnic ipip)')
 
 args = parser.parse_args()
+
+# 配置日志级别
+if args.verbose:
+    logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+else:
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 class Node:
     def __init__(self, cidr, parent=None):
@@ -125,6 +138,66 @@ if 'ipip' in args.ipv4_list:
 subtract_cidr(root, RESERVED)
 # get rid of reserved addresses
 subtract_cidr(root_v6, RESERVED_V6)
+
+def debug_node_structure(node, include_cidr, depth=0):
+    """调试函数：显示节点结构"""
+    indent = "  " * depth
+    if not node.dead:
+        if node.cidr.supernet_of(IPv4Network(include_cidr)):
+            logging.debug(f"{indent}Node {node.cidr} (covers {include_cidr}) - children: {len(node.child)}")
+            if len(node.child) > 0:
+                logging.debug(f"{indent}  This node has children, so it won't appear in final output")
+                for child in node.child[:3]:  # 只显示前3个子节点
+                    debug_node_structure(child, include_cidr, depth + 1)
+                if len(node.child) > 3:
+                    logging.debug(f"{indent}  ... and {len(node.child) - 3} more children")
+            else:
+                logging.debug(f"{indent}  This node will appear in final output")
+
+# Add back the force-included ranges
+if args.include:
+    for include_cidr in args.include:
+        if ":" in include_cidr:
+            # IPv6 address
+            network = IPv6Network(include_cidr)
+            # Check if this network is already covered by existing routes
+            already_covered = False
+            covering_route = None
+            if not args.force:
+                for existing_node in root_v6:
+                    if not existing_node.dead and existing_node.cidr.supernet_of(network):
+                        already_covered = True
+                        covering_route = existing_node.cidr
+                        break
+            
+            if already_covered:
+                logging.warning(f"{include_cidr} is already covered by existing route {covering_route}, skipping (use --force to override)")
+            else:
+                root_v6.append(Node(network))
+                if args.force:
+                    logging.info(f"Force adding: {include_cidr}")
+        else:
+            # IPv4 address
+            network = IPv4Network(include_cidr)
+            # Check if this network is already covered by existing routes
+            already_covered = False
+            covering_route = None
+            if not args.force:
+                for existing_node in root:
+                    if not existing_node.dead and existing_node.cidr.supernet_of(network):
+                        already_covered = True
+                        covering_route = existing_node.cidr
+                        if args.verbose:
+                            logging.debug(f"Found covering route {covering_route} for {include_cidr}")
+                            debug_node_structure(existing_node, include_cidr)
+                        break
+            
+            if already_covered:
+                logging.warning(f"{include_cidr} is already covered by existing route {covering_route}, skipping (use --force to override)")
+            else:
+                root.append(Node(network))
+                if args.force:
+                    logging.info(f"Force adding: {include_cidr}")
 
 with open("routes4.conf", "w") as f:
     dump_bird(root, f)

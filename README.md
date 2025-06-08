@@ -17,7 +17,8 @@ Requires Python 3, no additional dependencies.
 ```
 $ python3 produce.py -h
 
-usage: produce.py [-h] [--exclude [CIDR [CIDR ...]]] [--next INTERFACE OR IP]
+usage: produce.py [-h] [--exclude [CIDR [CIDR ...]]] [--include [CIDR [CIDR ...]]]
+                  [--force] [--verbose] [--next INTERFACE OR IP]
                   [--ipv4-list [{apnic,ipip} [{apnic,ipip} ...]]]
 
 Generate non-China routes for BIRD.
